@@ -47,15 +47,17 @@ cAddressMask            = %0001_1111
 cMaxPayloadSize         = 4*cNumPayloadRegisters
 
 'Crow error numbers
-cDeviceUnavailable      = 0
-cIsBusy                 = 1
-cCommandTooBig          = 2
-cCorruptPayload     	= 3
-cPortNotOpen            = 4
-cLowResources           = 5
-cUnknownProtocol 	= 6
-cImplementationFault    = 7
-cUserCodeFault          = 8
+cUnspecifiedError       = 0
+cDeviceUnavailable      = 1
+cDeviceIsBusy           = 2
+cCommandTooLarge        = 3
+cCorruptPayload         = 4
+cPortNotOpen            = 5
+cLowResources           = 6
+cUnknownProtocol        = 7
+cRequestTooLarge        = 8
+cImplementationFault    = 9
+cServiceFault           = 10
 
 'Standard Admin status numbers
 cCommandNotAvailable    = 1
@@ -346,7 +348,7 @@ rxVerifyAddress         if_nz   cmp         _rxTmp_SH, #cAddress            wz  
                                     payload bytes weren't actually saved, so there's nothing to do except report
                                     that the command was too big. }
                                 cmp         payloadLength, maxPayloadSize   wc, wz
-                if_nc_and_nz    mov         Payload, #cCommandTooBig
+                if_nc_and_nz    mov         Payload, #cCommandTooLarge
                 if_nc_and_nz    jmp         #SendCrowError
 
                                 { Check the port. }
