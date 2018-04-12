@@ -71,15 +71,24 @@ cMissingParameters      = 2
     PropCR uses the counter B module in RecoveryMode (when waiting for rx line idle or detecting breaks).
     PropCR never uses the counter A module or its registers -- it leaves it free for custom use.
 }
+_txWait_SH          = $1f0  'sh-par
 _rxPort_SH          = $1f0  'sh-par
+
+_txByteNum_SH       = $1f1  'sh-cnt
 _rxTmp_SH           = $1f1  'sh-cnt
+
+_txBitCountdown_SH  = $1f2  'sh-ina
 _rxCH0inc_SH        = $1f2  'sh-ina - CH0 (incomplete -- does not include bit 7) is saved in-loop for reserved bits testing
+
 _rxF16U_SH          = $1f3  'sh-inb
-token               = $1f5  'outb - token is assigned in the recieve loop; this register is used for composing the response header (so unsuitable as nop)
-sendBufferPointer   = $1f7  'dirb - points to Payload (0) by default
-packetInfo          = $1fe  'vcfg - (video generator is off if bits 29-30 are zero); packetInfo is CH2; potential nop; upper bytes always set to 0
-_rxByte             = $1ff  'vscl - important: it is assumed the upper bytes of this register are always zero (required for F16 calculation)
+
+token               = $1f5  'outb - token is assigned in the recieve loop; this register is also used for composing the response header (so unsuitable as nop)
+packetInfo          = $1f7  'dirb -  packetInfo is CH2; potential nop; upper bytes always set to 0 (from _rxByte)
+sendBufferPointer   = $1fe  'vcfg - (video generator is off if bits 29-30 are zero); points to Payload (0) by default; should always be 9-bit value
+
+'Important: the upper bytes of _rxByte (i.e. VSCL) must always be zero by the time ReceiveCommand is executed.
 _txByte             = $1ff  'vscl - same as for _rxByte (upper bytes temporarily non-zero until masked, so not suitable for vcfg or ctrx, but ok to alias _rxByte)
+_rxByte             = $1ff  'vscl - important: it is assumed the upper bytes of this register are always zero (required for F16 calculation)
 
 
 { Testing Pins }
@@ -90,75 +99,65 @@ cPin3 = |< 3   'break detected, waiting for end
 cPin4 = |< 4   'RxP_NoStore block executed (toggles) -- for command payload exceeds capacity
 cPin5 = |< 5   'UserCode (toggles)
 
+{
+setPins(rxPin, txPin)
+setBaudrate(baudrate)
+setInterbyteTimeoutInMS(milliseconds)
+setInterbyteTimeoutInBitPeriods(count)
+setRecoveryTimeInMS(milliseconds)
+setRecoveryTimeInBitPeriods(count)
+setBreakThresholdInMS(milliseconds)
+setAddress(address)
+setUserPort(port)
 
-var
-    long __twoBitPeriod
-   
- 
+Setting the baudrate must come before setting the interbyte timeout or recovery time,
+if those are specified in bit periods.
+
+If the recovery time is set, then setBreakThresholdInMS must be called afterwards
+in order to recalculate the break multiple, regardless if the threshold has changed.
+
+} 
+
 { setPins(rxPin, txPin)
-    The pins may be the same pin.
+    The pins may be the same.
 }
 pub setPins(__rxPin, __txPin)
-    rcvyLowCounterMode := (rcvyLowCounterMode & $ffff_ffe0) | (__rxPin & $1f)
     rxMask := |< __rxPin
     txMask := |< __txPin
+    rcvyLowCounterMode := (rcvyLowCounterMode & $ffff_ffe0) | (__rxPin & $1f)
 
-{ setBaudrate(baudrate)
-}
-pub setBaudrate(__baudrate)
+pub setBaudrate(__baudrate) | __twoBitPeriod
     __twoBitPeriod := (clkfreq << 1) / __baudrate #> 52
     bitPeriod0 := __twoBitPeriod >> 1
     bitPeriod1 := bitPeriod0 + (__twoBitPeriod & 1)
     startBitWait := (bitPeriod0 >> 1) - 10 #> 5
     stopBitDuration := ((10*clkfreq) / __baudrate) - 5*bitPeriod0 - 4*bitPeriod1 + 1
 
-{ setBreakThresholdInMS(milliseconds)
-}
 pub setBreakThresholdInMS(__milliseconds)
+    breakMultiple := (__milliseconds*(clkfreq/1000)) / recoveryTime #> 1
 
+pub setInterbyteTimeoutInMS(__milliseconds)
+    timeout := __milliseconds*(clkfreq/1000)
+
+pub setInterbyteTimeoutInBitPeriods(__count)
+    timeout := __count*bitPeriod0
+
+pub setRecoveryTimeInMS(__milliseconds)
+    recoveryTime := __milliseconds*(clkfreq/1000)
+
+pub setRecoveryTimeInBitPeriods(__count)
+    recoveryTime := __count*bitPeriod0
+
+pub setUserPort(__port)
+    _AdminOpenPortsList := (_AdminOpenPortsList & $ffff_ff00) | (__port & $ff)
+    _AdminCheckUserPort := (_AdminCheckUserPort & $ffff_ff00) | (__port & $ff)
+    _RxCheckUserPort := (_RxCheckUserPort & $ffff_ff00) | (__port & $ff)
 
 pub setAddress(__address)
     _RxCheckAddress := (_RxCheckAddress & $ffff_ffe0) | (__address & $1f)
 
-
-{setParams(rxPin, txPin, baudrate, address, minBreakDurationInMS)
-Call before init() or new().
-Parameters:
-    rxPin, txPin - the sending and receiving pins, which may be the same pin
-    baudrate - desired baudrate (e.g. 115200, 3_000_000)
-    address - device address (must be 1-31); commands must be sent to this address if not broadcast
-    minBreakDurationInMS - the minimum threshold for break detection, in milliseconds (must be 1+)
-}
-pub setParams(__rxPin, __txPin, __baudrate, __address, __minBreakDurationInMS) | __tmp
-    
-    __tmp := ( 2 * clkfreq ) / __baudrate       '__tmp is now 2 bit periods, in clocks
-    
-    bitPeriod0 := __tmp >> 1                                                                'bitPeriod0
-    bitPeriod1 := bitPeriod0 + (__tmp & 1)                                              'bitPeriod1 = bitPeriod0 + [0 or 1]
-    startBitWait := (bitPeriod0 >> 1) - 10 #> 5                                             'startBitWait (an offset used for receiving)
-    stopBitDuration := ((10*clkfreq) / __baudrate) - 5*bitPeriod0 - 4*bitPeriod1 + 1    'stopBitDuration (for sending; add extra bit period if required)
-    
-    __tmp <<= 3                             '__tmp is now 16 bit periods, in clocks
-    
-    timeout := __tmp                        'timeout, in clocks; see "The Interbyte Timeout" in User Guide
-    
-    'The default 16 bit period timeout above is based on the assumption that the PC's command 
-    ' packet will be received in a steady stream, with no pauses between bytes. If this assumption
-    ' is not true then the timeout may be defined in milliseconds, as shown below.
-    'See "The Interbyte Timeout" section of the User Guide for more details.
-    '__params[4] := (clkfreq/1000) * <non-zero number of milliseconds>    'timeout set using milliseconds
-    
-    recoveryTime := __tmp                                                                'recoveryTime (in clocks; see "Recovery Mode" in User Guide)
-    breakMultiple := ((clkfreq/1000) * __minBreakDurationInMS) / recoveryTime #> 1         'breakMultiple (see "Recovery Mode" in User Guide)
-
-    rxMask := |< __rxPin
-    txMask := |< __txPin
-    _RxCheckAddress := (_RxCheckAddress & $ffff_fe00) | (__address & $1ff)
-    
-
-{ start
-}
 pub start
+    timeout #>= bitPeriod0 << 2
     long[20000] := cnt
     result := cognew(@Init, 0) + 1          'PropCR does not use par, so it is free for custom use
     waitcnt(cnt + 10000)                    'wait for cog launch to finish (to protect settings of just launched cog)
@@ -284,7 +283,7 @@ testingPins             long cPin0 | cPin1 | cPin2 | cPin3 | cPin4 | cPin5
   'RX StartWait Instructions').
 }
 ReceiveCommand
-                                xor         outa, cPin0
+                                xor         outa, #cPin0
 
                                 { Pre-loop initialization. }
                                 mov         _rxWait0, startBitWait                  'see page 99
@@ -385,7 +384,7 @@ _RxStartWait                    long    0-0                                     
   counter module off before exiting since it consumes some extra power, but this is not required.
 }
 RecoveryMode
-                                or          outa, cPin2
+                                or          outa, #cPin2
 
                                 mov         ctrb, rcvyLowCounterMode                'start counter B module counting clocks the rx line is low
                                 mov         _rcvyWait, recoveryTime
@@ -397,7 +396,7 @@ RecoveryMode
                                 mov         _rcvyCurrPhsb, phsb
                                 cmp         _rcvyPrevPhsb, _rcvyCurrPhsb    wz      'z=1 line always high, so exit
                         if_z    mov         ctrb, #0                                'turn off counter B module
-                        if_z    andn        outa, cPin2
+                        if_z    andn        outa, #cPin2
                         if_z    jmp         #ReceiveCommand
                                 mov         _rcvyTmp, _rcvyPrevPhsb
                                 add         _rcvyTmp, recoveryTime
@@ -406,7 +405,7 @@ RecoveryMode
                                 mov         _rcvyPrevPhsb, _rcvyCurrPhsb
                                 djnz        _rcvyCountdown, #:loop
                                 mov         ctrb, #0                                'turn off counter B module
-                                andn        outa, cPin2
+                                andn        outa, #cPin2
 
                         { fall through to BreakHandler }
 
@@ -414,9 +413,9 @@ RecoveryMode
     This code is executed after the break is detected (it may still be ongoing).
 }
 BreakHandler
-                                or          outa, cPin3
+                                or          outa, #cPin3
                                 waitpeq     rxMask, rxMask                          'wait for break to end
-                                andn        outa, cPin3
+                                andn        outa, #cPin3
                                 jmp         #RecoveryMode
 
 
@@ -477,7 +476,7 @@ k4143                           long    $4143                                   
 rxP_NoStore
                         if_z    subs        _rxOffset, #24                      'A - go to rxF16_C0 if done with chunk's payload
                         if_nz   mov         _rxOffset, #0                       ' B - otherwise stay at this block (all we're doing is waiting to report Crow error)
-                                xor         outa, cPin4
+                                xor         outa, #cPin4
 
 'todo: return to rxP_NoStore after testing
 rcvyLowCounterMode              long    $3000_0000 | ($1f & cRxPin)             ' C - (spacer nop) rx pin number should be set before launch
@@ -495,7 +494,7 @@ rxExit                  if_z    jmp         #ReceiveCommandFinish               
     This is where the receive loop exits to when all bytes of the packet have arrived.
 }
 ReceiveCommandFinish
-                                xor         outa, cPin2
+                                xor         outa, #cPin2
 
                                 { Prepare to store any leftover (unstored) payload. This is OK even if the payload exceeds capacity. In
                                     that case _rxNextAddr will still be Payload, and we assume there is at least one long's
@@ -676,7 +675,7 @@ long $0100_4143         'packet identifier (0x43, 0x41), status=0 (OK), port is 
 
 getPortInfoBuffer_Admin
 long $0300_4143         'packet identifier (0x43, 0x41), status=0 (OK), port is open, protocolIdentStr included
-long $4309_0800         'protocolIdentStr starts at byte 8 and has length 9; first char is "C"; final string = "CrowAdmin"
+long $4309_0700         'protocolIdentStr starts at offset 7 and has length 9; first char is "C"; final string = "CrowAdmin"
 long $4177_6f72         '"rowA"
 long $6e69_6d64         '"dmin"
 
@@ -702,40 +701,41 @@ TxSendAndResetF16_ret           ret
   the tx pin is already an output.
     Usage:  mov         _txCount, <number of bytes to send, MUST be non-zero>
             movs        _TxHandoff, <buffer address, sending starts with low byte>
-            call        #TxSendBytes                                                
+            call        #TxSendBytes
+    After: _txCount = 0                                         
 }
 TxSendBytes
-                                mov         par, #0                                 'par used to perform handoff every 4 bytes
-                                mov         cnt, cnt                                'cnt used for timing
-                                add         cnt, #21
-_TxByteLoop                     test        par, #%11                   wz
+                                mov         _txByteNum_SH, #0
+                                mov         _txWait_SH, cnt
+                                add         _txWait_SH, #21
+_TxByteLoop                     test        _txByteNum_SH, #%11         wz          'z=1 byteNum%4 == 0, so load next long
 _TxHandoff              if_z    mov         _txLong, 0-0
                         if_z    add         _TxHandoff, #1
-txStartBit                      waitcnt     cnt, bitPeriod0
+:startBit                       waitcnt     _txWait_SH, bitPeriod0
                                 andn        outa, txMask
                                 mov         _txByte, _txLong
-                                and         _txByte, #$ff                           '_txByte MUST be masked for F16 (also is a nop)
+                                and         _txByte, #$ff                           '_txByte MUST be masked for F16 (also required since it aliases _rxByte)
                                 add         _txF16L, _txByte
                                 ror         _txLong, #1                 wc
-txBit0                          waitcnt     cnt, bitPeriod1
+:bit0                           waitcnt     _txWait_SH, bitPeriod1
                                 muxc        outa, txMask
                                 cmpsub      _txF16L, #255
                                 add         _txF16U, _txF16L
                                 cmpsub      _txF16U, #255
                                 ror         _txLong, #1                 wc
-txBit1                          waitcnt     cnt, bitPeriod0
+:bit1                           waitcnt     _txWait_SH, bitPeriod0
                                 muxc        outa, txMask
-                                add         par, #1
-                                mov         inb, #6                                 'inb is bit loop count
-txBitLoop                       ror         _txLong, #1                 wc
-txBitX                          waitcnt     cnt, bitPeriod1
+                                add         _txByteNum_SH, #1
+                                mov         _txBitCountdown_SH, #6
+:bitLoop                        ror         _txLong, #1                 wc
+:bits2to7                       waitcnt     _txWait_SH, bitPeriod1
                                 muxc        outa, txMask
-                                xor         txBitX, #1                              'this is why bitPeriod0 must be at even address, with bitPeriod1 next
-                                djnz        inb, #txBitLoop
-txStopBit                       waitcnt     cnt, stopBitDuration
+                                xor         :bits2to7, #1                           'this is why bitPeriod0 must be at even address, with bitPeriod1 next
+                                djnz        _txBitCountdown_SH, #:bitLoop
+:stopBit                        waitcnt     _txWait_SH, stopBitDuration
                                 or          outa, txMask
                                 djnz        _txCount, #_TxByteLoop
-                                waitcnt     cnt, #0
+                                waitcnt     _txWait_SH, #0                          'do not return until stop bit is complete
 TxSendBytes_ret                 ret
 
 
@@ -836,6 +836,9 @@ SendResponseAndReturn_ret       ret
           used for sending).
         - packetInfo, which is the third byte of the command header. It contains the address
           in the cAddressMask bits, and the responseExpected flag in the cRspExpectedFlag bit.
+        - sendBufferPointer, which points to the first register of the response payload. By 
+          default this is 0 (Payload). It may be changed, but it must be restored to 0 before
+          receiving the next command (the admin code assumes it is 0).
     PropCR routines for user code:
         - SendResponse (jmp) or SendResponseAndReturn (call) to send a response.
         - ReceiveCommand (jmp) to listen for another command.
@@ -850,10 +853,11 @@ SendResponseAndReturn_ret       ret
     Warning: don't use other SPRs without consulting the 'Special Purpose Registers' section.
 }
 UserCode
-                                xor         outa, cPin5
+                                xor         outa, #cPin5
+                                jmp         #SendResponse
                                 jmp         #ReportUnknownProtocol
 
-long 0[44]
+'long 0[44]
 
 
 { ==========  Begin Reserved Registers and Temporaries ========== }
