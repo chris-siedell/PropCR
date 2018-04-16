@@ -1,0 +1,236 @@
+=====
+PropCR User Guide
+April 2018 - in development
+Chris Siedell
+http://siedell.com/projects/Crow/
+http://siedell.com/projects/PropCR/
+=====
+
+What is the Crow protocol?
+What is PropCR?
+How to implement a service
+What are the settings?
+What about byte ordering?
+Implementation Notes
+ - cog layout
+ - temporaries
+ - special purpose registers
+ - recovery mode
+ 
+
+
+  PropCR provides a device implementation of the Crow v2 serial protocol, which
+allows a computer (a 'host') to send commands to a Propeller (a 'device'). Commands
+are sent to an address (1-31, or broadcast) and a port (0-255). A 'service' at the
+given address and port then performs the command and sends a response if expected.
+
+  The Crow protocol is a half-duplex, command/response protocol that allows for
+multiple devices, so multiple instances of PropCR may be launched into separate cogs
+and share the same rx and tx lines, as long as each is given a unique address.
+
+  The custom service is implemented at UserCode.
+
+  PropCR-BD features break detection. When a break condition is detected the code at
+BreakHandler will be invoked.
+
+  PropCR requires non-standard byte ordering for command payloads. Specifically, every
+four-byte group must be reversed, including any remainder bytes. Response payloads
+follow the standard byte ordering.
+
+
+ Here's a description of all
+  settings:
+    bitPeriod0/1 - These are the bit periods, in clocks. bitPeriod1 may be identical to bitPeriod0, or
+  it may be bitPeriod0+1 -- using two bit period registers allows half-clock resolution, on average.
+  The bit period registers have specific location requirements due to the bit twiddling mechanism
+  in the transmit code (bitPeriod0 must be at an even address, bitPeriod1 must immediately follow it).
+    startBitWait - This is a time, in clocks, that is added for the wait from the start bit edge to
+  start bit sampling. This can not be less than 5 clocks, which means that for a 26 clock bit period
+  the bit samplings will start two clocks late.
+    stopBitDuration - This is the amount of time, in clocks, that PropCR will hold the stop bit before
+  starting to send another byte.
+    timeout - The interbyte timeout, in clocks. A command is silently discarded if more than this
+  amount of time elapses between bytes.
+    recoveryTime - The minimum number of clocks that the rx line must be idle before PropCR will
+  listen for a command after a parsing or framing error.
+    breakMultiple - This is the minimum number of recoveryTime intervals that the rx line must be low
+  before PropCR will detect a break condition.
+    rxMask, txMask - Bitmasks for the rx and tx pins. There should be only one pin set in each mask. The
+  pins may be identical -- the line will be high-z except when sending.
+    rxPin - In addition to rxMask, the rx pin number must be stored in the bottom 5 bits of rcvyLowCounterMode.
+    address - The Crow device address (1 to 31) is stored in the s-field of _RxCheckAddress.
+    userPort - The user port number is stored in the s-fields of _AdminOpenPortsList, _AdminCheckUserPort, and _RxCheckUserPort.
+  The user port is the port number that commands for the custom service should arrive on. It must be a
+  non-zero one-byte value (port 0 is for Crow admin commands, and is the only other port PropCR will have open).
+    Here is example Spin code to apply the settings given baudrate, clkfreq, interbyteTimeoutInMS, recoveryTimeInMS,
+  breakThresholdInMS, rxPin, txPin, address, and userPort:
+        twoBitPeriod := (2*clkfreq) / baudrate #> 52                                    'PropCR does not support bit periods of less than 26 clocks
+        bitPeriod0 := twoBitPeriod >> 1
+        bitPeriod1 := bitPeriod0 + (twoBitPeriod & 1)
+        startBitWait := (bitPeriod0 >> 1) - 10 #> 5                                     'can not be less than 5 or there will be waitcnt rollover
+        stopBitDuration := ((10*clkfrq) / baudrate) - 5*bitPeriod0 - 4*bitPeriod1 + 1   'for one stop bit (8N1) - add extra clocks as required
+        clksPerMS := clkfreq/1000
+        timeout := interbyteTimeoutInMS*clksPerMS
+        recoveryTime := recoveryTimeInMS*clksPerMS
+        breakMultiple := (breakThresholdInMS*clksPerMS) / recoveryTime #> 1             'breakMultiple must be at least one
+        rxMask := |< rxPin
+        txMask := |< txPin
+        rcvyLowCounterMode := (rcvyLowCounterMode & $ffff_ffe0) | (rxPin & $1f)
+        _RxCheckAddress := (_RxCheckAddress & $ffff_ffe0) | (address & $1f)
+        _AdminOpenPortsList := (_AdminOpenPortsList & $ffff_ff00) | (userPort & $ff)
+        _AdminCheckUserPort := (_AdminCheckUserPort & $ffff_ff00) | (userPort & $ff)
+        _RxCheckUserPort := (_RxCheckUserPort & $ffff_ff00) | (userPort & $ff)
+    The interbyte timeout and recovery time may also be sensibly defined in bit periods. The Spin code for
+  setting the s-fields can be simplified by setting the entire register value directly.
+
+
+Using PropCR to Implement a Service
+===================================
+
+Key Points
+----------
+
+PropCR listens on just two ports per instance: 0, for Crow admin commands,
+which it handles,  and the user port, which is for custom service.
+
+When a command arrives on the user port PropCR jumps to UserCode.
+
+Implementing a Service
+----------------------
+
+The custom service is implementated at UserCode. This 
+
+Setting up the Payload Buffer
+-----------------------------
+
+PropCR both sends and receives using a cog register buffer. The command
+payload is always received into the buffer at Payload, which starts at
+register 0 in the default implementation. The response payload is sent from
+sendBufferPointer, which points to Payload by default. This pointer may be
+changed, however the Crow admin code assumes it is Payload, so if user code
+modifies this pointer it should change it back before receiving another
+command.
+
+The Crow protocol allows for payloads up to 2047 bytes, but supporting this
+size is not possible since there aren't enough cog registers. Users of PropCR
+will need to decide what size of payloads to support. This is done using the 
+cNumPayloadRegisters constant. If the host attempts to send a command that
+exceeds the buffer size it will receive a Crow-level CommandTooLarge error.
+
+Note that cNumPayloadRegisters must be even. This is due to the fact that
+bitPeriod0 (which follows the Payload buffer) must be at an even address.
+
+The buffer is also where the initialization code is located, so it needs to be
+large enough for that purpose, or the initialization code must go elsewhere.
+
+
+Selecting an Address and Port
+-----------------------------
+
+Each PropCR instance has just one Crow address (1-31) and one user port
+(1-255 -- port 0 is reserved for Crow admin commands). The user port is where
+the user's service commands will be received. Every device (or cog) using the
+same rx and tx lines must have a unique address, but all devices may listen on
+the same ports.
+
+Port 0 is reserved for Crow admin commands, and port 1 is reserved for admin
+commands specific to a device implementation (PropCR does not have any). It is
+recommended to use ports 32 and above and leave the lower ports for future
+standardized services.
+
+The admin commands getOpenPorts and getPortInfo (which PropCR implements) can
+allow a host to discover which port the custom service is listening on, so the
+host does not initially need to know the port number. It will need to know the
+address, unless it queuries every address until it finds what it is looking
+for.
+
+
+Modifying the getPortInfo Response
+----------------------------------
+
+The getPortInfo admin command allows the host to know what service is running
+on a given port. By default, the getPortInfo response for the user port merely
+states that the port is open. Users may want to customize this response so
+that it provides the identity of the protocol being used. The getPortInfo
+response for the admin port (0) may be used as a template.
+
+The prepared responses are at getPortInfoBuffer_Admin and
+getPortInfoBuffer_User. If either of these is modified the payload sizes in
+the AdminGetPortInfo routine will need to be updated.
+
+
+Changing Settings Before Launch
+-------------------------------
+
+PropCR is designed to be completely cog-contained, so it does not have any way
+for outside code (i.e. Spin) to change its settings after launch. Settings can
+be changed before launch. PropCR comes with Spin routines for changing the
+serial and Crow settings.
+
+
+
+
+The Interbyte Timeout
+======================
+
+The interbyte timeout is used by the PropCR parser to decide when a new packet has arrived. It is the maximum amount of time (in system clocks) that PropCR will allow between bytes of a packet.
+
+PropCR attempts to parse the packet as it arrives (instead of receiving the packet into a buffer and then parsing it). When a new byte is received PropCR calculates how much time has elapsed since the last byte was received. If this time exceeds the interbyte timeout then PropCR assumes this new byte is the first byte of a packet and it resets the parser.
+
+The interbyte timeout should be short so that PropCR can reliably detect the start of a new packet (its parser can not work retrospectively). However, the timeout must be greater than the stop bit(s) period (measured in clocks), plus some safety margin.
+
+
+
+Recovery Mode
+=============
+
+When PropCR encounters framing errors or parsing errors it enters recovery mode. In recovery mode PropCR periodically monitors the rx line. If the rx line was idle for an interval (recoveryTime clocks) then it exits recovery mode and listens for a new command. The rationale for this is that a command will probably be preceded by a short idle period.
+
+Since PropCR can't receive a command in recovery mode recoveryTime should be
+short. However, it should be more than a byte period so that PropCR can
+correctly identify a start bit.
+
+Recovery mode is where PropCR-BD listens for the break condition, which it
+detects if the rx line is continuously low for at least breakMultiple*recoveryTime clocks.
+
+
+
+
+Cog Layout
+==========
+
+By default, PropCR has the following cog layout:
+
+        +-----------------------+ - 0
+        |                       |
+        |     Payload Buffer    |
+        |   and Initialization  |
+        |                       |
+        |-----------------------| - N = cNumPayloadRegisters (N must be even)
+        |                       |
+        |     PropCR Block      |
+        | (incl. BreakHandler)  |
+        |                       |
+        |-----------------------|
+        |                       |
+        |      User Block       |
+        |                       |
+        |-----------------------| - 485
+        |    Res'd Variables    |
+        |    and  Temporaries   |
+        +-----------------------+ - 496
+
+This layout was chosen to simplify executing received code in the payload
+buffer -- this is a way of expanding the code space without involving the hub.
+Received code can be compiled to always run in the same locations and it can
+take advantage of temporary (scratch) registers at fixed locations.
+
+The payload buffer is not statically allocated -- the initialization code
+shifts the PropCR and user blocks up into place to avoid wasting excessive
+hub ram.
+
+There are ten fixed temporary (scratch) registers at the end of the usable cog
+space. User code may also use these registers (see the "Temporaries" section
+for details).
+
+
