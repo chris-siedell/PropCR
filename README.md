@@ -25,6 +25,8 @@ PropCR instance. Using the 'propcr_order=True' argument to send_command will
 automatically perform the necessary byte re-ordering expected by PropCR.
 
 PropCR, this project: http://siedell.com/projects/PropCR/
+
 PyCrow, a python host implementation: http://siedell.com/projects/PyCrow/
+
 Crow, the serial protocol: http://siedell.com/projects/Crow/
 
