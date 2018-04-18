@@ -1,8 +1,8 @@
 {
 ======================================
 PropCR.spin
-Version 0.2 (alpha/experimental)
-16 April 2018
+Version 0.2.1 (alpha/experimental)
+17 April 2018
 Chris Siedell
 http://siedell.com/projects/Crow/
 http://siedell.com/projects/PropCR/
@@ -472,33 +472,33 @@ CrowAdmin
                         if_nc   cmp         _admTmp, k4143                  wz      'z=0 bad identifying bytes
                     if_c_or_nz  jmp         #ReportUnknownProtocol
 
-                                { The third byte provides the specific command. }
+                                { The third byte specifies the command. }
                                 mov         _admTmp, Payload
                                 shr         _admTmp, #16
-                                and         _admTmp, #$ff                   wz      'z=1 type==0 -> echo/hostPresence
-                        if_z    jmp         #SendResponse                           'payload is identical for echo (command 0x00 becomes status OK)
-                                cmp         _admTmp, #1                     wz      'z=1 type==1 -> getDeviceInfo
-                        if_z    jmp         #AdminGetDeviceInfo
-                                cmp         _admTmp, #2                     wz      'z=1 type==2 -> getOpenPorts
-                        if_z    jmp         #AdminGetOpenPorts
-                                cmp         _admTmp, #3                     wz      'z=1 type==3 -> getPortInfo
-                        if_z    jmp         #AdminGetPortInfo
+                                and         _admTmp, #$ff                   wz      'z=1 echo/hostPresence; masking req'd since upper byte of Payload is unknown/undefined
+                        if_nz   max         _admTmp, #4                             'using fall-through for echo (z=1) -- messy, but saves an instruction
+                        if_nz   add         _admTmp, #:jumpTable-1                  'minus one used since echo/hostPresence isn't in table
+                        if_nz   jmp         _admTmp
 
-                                { PropCR does not support any other admin commands. }
-                                mov         Payload, #cAdminCommandNotAvailable
+:jumpTable              if_nz   jmp         #AdminGetDeviceInfo                     '1 
+                        if_nz   jmp         #AdminGetOpenPorts                      '2
+                        if_nz   jmp         #AdminGetPortInfo                       '3
+                        if_nz   mov         Payload, #cAdminCommandNotAvailable     '4+ not available
 
-                            { fall through to AdminSendError }
+                            { fall through to AdminSendError (or for echo if z=1) }
 
 { AdminSendError (jmp)
+    IMPORTANT: the z-flag must be 0 when this routine is invoked, if an error is to be reported.
     This routine sends an admin protocol level error response. It should be used only if we are confident
   that the command was an admin command.
     Payload should be set with the error status code before jumping to this code.
 }
 AdminSendError
-                                shl         Payload, #16
-                                or          Payload, k4143
-                                mov         payloadSize, #3
-                                jmp         #SendResponse
+                        if_nz   shl         Payload, #16
+                        if_nz   or          Payload, k4143
+                        if_nz   mov         payloadSize, #3
+
+                                jmp         #SendResponse                           'this sendResponse does double duty for echo
 
 
 { AdminGetDeviceInfo (jmp)
@@ -521,6 +521,7 @@ AdminGetOpenPorts
 _AdminOpenPortsList             mov         Payload+1, #cUserPort                   's-field set before launch (admin port 0 gets set automatically)
                                 mov         payloadSize, #6
                                 jmp         #SendResponse
+
 
 { AdminGetPortInfo (jmp)
     The getPortInfo response returns information about a specific port.
