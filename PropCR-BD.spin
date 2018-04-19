@@ -1,12 +1,11 @@
 {
-======================================
+========================================
 PropCR-BD.spin (with break detection)
-Version 0.2.1 (alpha/experimental)
-17 April 2018
+Version 0.3.0 (alpha/experimental)
+18 April 2018
 Chris Siedell
-http://siedell.com/projects/Crow/
-http://siedell.com/projects/PropCR/
-======================================
+https://github.com/chris-siedell/PropCR
+========================================
 
   This file is intended to serve as a base for implementing a Crow service. By default
 it doesn't do anything except respond to standard Crow admin commands on port 0: ping,
@@ -77,22 +76,20 @@ con
     cRspExpectedFlag        = $80
     cAddressMask            = %0001_1111
     
-    { Crow error response types. }
-    cUnspecifiedError       = 0
-    cDeviceUnavailable      = 1
-    cDeviceIsBusy           = 2
-    cCommandTooLarge        = 3
-    cCorruptPayload         = 4
-    cPortNotOpen            = 5
-    cLowResources           = 6
-    cUnknownProtocol        = 7
-    cRequestTooLarge        = 8
-    cImplementationFault    = 9
-    cServiceFault           = 10
-    
-    { Crow admin error status numbers. }
-    cAdminCommandNotAvailable   = 1
-    cAdminMissingParameters     = 2
+    { Crow error response numbers. }
+    cOversizedCommand           = 5
+    cPortNotOpen                = 7
+    cUnspecifiedServiceError    = 64
+    cUnknownCommandFormat       = 65
+    cRequestTooLarge            = 66
+    cServiceLowResources        = 67
+    cCommandNotAvailable        = 68
+    cCommandNotImplemented      = 69
+    cCommandNotAllowed          = 70
+    cInvalidCommand             = 71
+    cIncorrectCommandSize       = 72
+    cMissingCommandData         = 73
+    cTooMuchCommandData         = 74
     
     { Special Purpose Registers
         To save space, PropCR makes use of some special purpose registers. The following SPRs are used for
@@ -362,7 +359,7 @@ RecoveryMode
 }
 BreakHandler
                                 waitpeq     rxMask, rxMask                          'wait for break to end
-                                jmp         #RecoveryMode
+                                jmp         #ReceiveCommand
 
 
 { RX Parsing Instructions, used by ReceiveCommand
@@ -468,7 +465,7 @@ _RxCheckAddress         if_nz   cmp         _rxTmp_SH, #cAddress            wz  
                                     payload bytes weren't actually saved, so there's nothing to do except report
                                     that the command was too big. }
                                 cmp         payloadSize, maxPayloadSize     wc, wz
-                if_nc_and_nz    mov         Payload, #cCommandTooLarge
+                if_nc_and_nz    mov         Payload, #cOversizedCommand
                 if_nc_and_nz    jmp         #SendCrowError
 
                                 { Check the port. }
@@ -498,12 +495,12 @@ CrowAdmin
                         if_nc   mov         _admTmp, Payload
                         if_nc   and         _admTmp, kFFFF
                         if_nc   cmp         _admTmp, k4143                  wz      'z=0 bad identifying bytes
-                    if_c_or_nz  jmp         #ReportUnknownProtocol
+                    if_c_or_nz  jmp         #ReportUnknownCommandFormat
 
                                 { The third byte specifies the command. }
                                 mov         _admTmp, Payload
                                 shr         _admTmp, #16
-                                and         _admTmp, #$ff                   wz      'z=1 echo/hostPresence; masking req'd since upper byte of Payload is unknown/undefined
+                                and         _admTmp, #$ff                   wz      'z=1 echo/hostPresence; masked since upper byte of Payload is unknown/undefined
                         if_nz   max         _admTmp, #4                             'using fall-through for echo (z=1) -- messy, but saves an instruction
                         if_nz   add         _admTmp, #:jumpTable-1                  'minus one used since echo/hostPresence isn't in table
                         if_nz   jmp         _admTmp
@@ -511,22 +508,22 @@ CrowAdmin
 :jumpTable              if_nz   jmp         #AdminGetDeviceInfo                     '1 
                         if_nz   jmp         #AdminGetOpenPorts                      '2
                         if_nz   jmp         #AdminGetPortInfo                       '3
-                        if_nz   mov         Payload, #cAdminCommandNotAvailable     '4+ not available
+                        if_nz   mov         Payload, #cCommandNotAvailable          '4+ not available
+                        if_nz   jmp         #SendCrowError
 
-                            { fall through to AdminSendError (or for echo if z=1) }
+                            { fall through if z=1 (echo) }
 
-{ AdminSendError (jmp)
-    IMPORTANT: the z-flag must be 0 when this routine is invoked, if an error is to be reported.
-    This routine sends an admin protocol level error response. It should be used only if we are confident
-  that the command was an admin command.
-    Payload should be set with the error status code before jumping to this code.
+{ AdminGetOpenPorts (jmp, z=0), or echo (z=1)
+    Important: this routine assumes z=0 for its normal, specified behavior (sending a getOpenPorts response). If z=1
+  it just sends whatever response is already prepared, which is used for echo.
+    The response consists of six bytes: 0x43, 0x41, 0x02, 0x00, plus the user port and admin port 0.
 }
-AdminSendError
-                        if_nz   shl         Payload, #16
-                        if_nz   or          Payload, k4143
-                        if_nz   mov         payloadSize, #3
+AdminGetOpenPorts
+                        if_nz   andn        Payload, kFF00_0000                     'clear byte four, which is undefined
+_AdminOpenPortsList     if_nz   mov         Payload+1, #cUserPort                   's-field set before launch (admin port 0 gets set automatically)
+                        if_nz   mov         payloadSize, #6
 
-                                jmp         #SendResponse                           'this sendResponse does double duty for echo
+                                jmp         #SendResponse                           'this does double duty for echo (hostPresence goes back to ReceiveCommand w/o sending)
 
 
 { AdminGetDeviceInfo (jmp)
@@ -536,19 +533,7 @@ AdminSendError
 AdminGetDeviceInfo
                                 mov         sendBufferPointer, #getDeviceInfoBuffer
                                 mov         payloadSize, #43
-                                call        #SendResponseAndReturn
-                                mov         sendBufferPointer, #Payload
-                                jmp         #ReceiveCommand
-
-
-{ AdminGetOpenPorts (jmp)
-    The getOpenPorts response consists of six bytes: 0x43, 0x41, 0x00, 0x00, plus the user port and admin port 0.
-}
-AdminGetOpenPorts
-                                mov         Payload, k4143
-_AdminOpenPortsList             mov         Payload+1, #cUserPort                   's-field set before launch (admin port 0 gets set automatically)
-                                mov         payloadSize, #6
-                                jmp         #SendResponse
+                                jmp         #SendResponseAndResetPointer
 
 
 { AdminGetPortInfo (jmp)
@@ -556,15 +541,15 @@ _AdminOpenPortsList             mov         Payload+1, #cUserPort               
 }
 AdminGetPortInfo                { The port number of interest is in the fourth byte of the command. }
                                 cmp         payloadSize, #4                 wc      'c=1 command too short
-                        if_c    mov         Payload, #cAdminMissingParameters
-                        if_c    jmp         #AdminSendError
+                        if_c    mov         Payload, #cMissingCommandData
+                        if_c    jmp         #SendCrowError
                                 mov         _admTmp, Payload
                                 shr         _admTmp, #24                    wz      '_admTmp is the requested port number; z=1 admin port 0
                 
                                 { If z=1 then the requested port number is 0 (Crow admin). }
                         if_z    mov         sendBufferPointer, #getPortInfoBuffer_Admin
                         if_z    mov         payloadSize, #16
-                        if_z    jmp         #_AdminGetPortInfoFinish
+                        if_z    jmp         #SendResponseAndResetPointer
 
                                 { Check if it is the user port. }
 _AdminCheckUserPort             cmp         _admTmp, #cUserPort             wz      'z=1 user port; s-field set before launch
@@ -575,39 +560,40 @@ _AdminCheckUserPort             cmp         _admTmp, #cUserPort             wz  
                         if_nz   mov         sendBufferPointer, #getPortInfoBuffer_Closed
                         if_nz   mov         payloadSize, #4
 
-_AdminGetPortInfoFinish         call        #SendResponseAndReturn
-                                mov         sendBufferPointer, #Payload
-                                jmp         #ReceiveCommand
+                                jmp         #SendResponseAndResetPointer
 
 
 { The following buffers are prepared values for admin responses. If any of these buffers are changed
     remember to update the payload sizes in the above code. }
 
 getDeviceInfoBuffer
-long $0200_4143         'packet identifier (0x43, 0x41), status=0 (OK), implementation's Crow version = 2
-long ((cMaxPayloadSize & $ff) << 24) | ((cMaxPayloadSize & $0700) << 8) | ((cMaxPayloadSize & $0700) >> 8) | ((cMaxPayloadSize & $ff) << 8) 'buffer sizes, MSB first
-long $0e0f_0005         'packet includes implementation ascii description and device ascii description; implAsciiDesc has 14 bytes length at offset 15
-long $500e_1d00         'device ascii description has length of 14 bytes at offset 29; first char of implAsciiDesc is 'P' (final string is "PropCR-BD v0.2")
+long $0201_4143         'initial header (0x43, 0x41, 0x01), crowVersion = 2
+long ((cMaxPayloadSize & $ff) << 24) | ((cMaxPayloadSize & $0700) << 8) | ((cMaxPayloadSize & $0700) >> 8) | ((cMaxPayloadSize & $ff) << 8) 'max payload sizes
+long $0e0f_000a         'packet includes implAsciiDesc and deviceAsciiDesc; implAsciiDesc has offset 15 and length 14
+long $500e_1d00         'deviceAsciiDesc has offset 29 and length 14; first char of implAsciiDesc is 'P' (final string is "PropCR-BD v0.3")
 long $4370_6f72         '"ropC"
 long $4442_2d52         '"R-BD"
 long $2e30_7620         '" v0."
-long $5838_5032         '"2"; deviceAsciiDesc starts with "P8X" (final string is "P8X32A (cog N)")
+long $5838_5033         '"3"; deviceAsciiDesc starts with "P8X" (final string is "P8X32A (cog N)")
 long $2041_3233         '"32A "
 long $676f_6328         '"(cog"
 getDeviceInfoCogNum
 long $0029_3020         '" N)" - initializing code adds cogID to second byte to get numeral
 
 getPortInfoBuffer_Admin
-long $0300_4143         'packet identifier (0x43, 0x41), status=0 (OK), port is open, protocolIdentStr included
-long $4309_0700         'protocolIdentStr starts at offset 7 and has length 9; first char is "C"; final string = "CrowAdmin"
+long $0303_4143         'initial header (0x43, 0x41, 0x03), port is open, serviceIdentifier included
+long $4309_0700         'serviceIdentifier has offset 7 and length 9; first char is "C"; final string = "CrowAdmin"
 long $4177_6f72         '"rowA"
 long $6e69_6d64         '"dmin"
 
 getPortInfoBuffer_User
-long $0100_4143         'packet identifier (0x43, 0x41), status=0 (OK), port is open, no other details
+long $0103_4143         'initial header (0x43, 0x41, 0x03), port is open, no other details
 
-getPortInfoBuffer_Closed                            'k4143 works as prepared response for getPortInfo for a closed port (size 4 bytes)
-k4143                           long    $4143       'identifying bytes for Crow admin packets; potential nop
+getPortInfoBuffer_Closed
+long $0003_4143         'initial header (0x43, 0x41, 0x03), port is closed, no other details 
+
+k4143               long    $4143           'identifying bytes for Crow admin packets; potential nop
+kFF00_0000          long    $ff00_0000      'used for clearing byte 4 of admin getOpenPorts response; potential nop
 
 
 { TxSendAndResetF16 (call)
@@ -669,23 +655,21 @@ _TxHandoff              if_z    mov         _txLong, 0-0
 TxSendBytes_ret                 ret
 
 
-{ ReportUnknownProtocol (jmp)
-    Both admin and user code may use this routine to send a UnknownProtocol Crow-level
-  error response. This is the correct action to take if the received command does not
-  conform to the expected protocol format.
+{ ReportUnknownCommandFormat (jmp)
+    Reporting an UnknownCommandFormat error is the correct action to take if the
+  received command does not conform to the expected protocol.
     After sending the error response execution goes to ReceiveCommand.
 }
-ReportUnknownProtocol
-                                mov         Payload, #cUnknownProtocol
+ReportUnknownCommandFormat
+                                mov         Payload, #cUnknownCommandFormat
 
                             { fall through to SendCrowError }
 
 { SendCrowError (jmp)
     This routine sends a Crow-level error response.
-    It assumes the low byte of Payload has been set to the error number (and that no
-  other bits of E0 are set -- PropCR does not send error details).
+    It assumes the low byte of Payload has been set to the error number.
 }
-SendCrowError                   movs        _SendApplyTemplate, #$82                'this modification of the RH0 template is automatically reverted at end of sending
+SendCrowError                   or          _SendApplyTemplate, #$80                'set the error flag of the RH0 template (gets cleared at end of sending routine)
                                 mov         payloadSize, #1
 
                             { fall through to SendResponse }
@@ -705,7 +689,7 @@ SendResponseAndReturn
                         if_nc   jmp         #_SendDone                                  '...must not send if responses forbidden
 
                                 { Make sure the payload size is within specification -- truncate if necessary. This is done to prevent
-                                    sending too many payload bytes -- the payload size in the header will always be 11 bits. }
+                                    sending too many payload bytes -- the payload size in the header is always masked to 11 bits. }
                                 max         payloadSize, k7FF
 
                                 { Compose header bytes RH0-RH2 in token (so RH2 already set). }
@@ -717,7 +701,7 @@ SendResponseAndReturn
                                 mov         _txCount, payloadSize
                                 shr         _txCount, #5
                                 and         _txCount, #%0011_1000
-_SendApplyTemplate              or          _txCount, #2                                'RH0 template (s-field) is changed only for error responses, then reverted when done
+_SendApplyTemplate              or          _txCount, #2                                's-field is the RH0 template (sets bits other than upper three of payload size)
                                 or          token, _txCount                             'RH0 = upper three bits of payloadSize, errorFlag, and reserved bits
 
                                 { Reset F16. }
@@ -749,21 +733,30 @@ _SendApplyTemplate              or          _txCount, #2                        
 :loopExit                       { Release line (make high-z). }
                                 andn        dira, txMask
                                 
-_SendDone                       { Revert the RH0 template (in case this was an error response). }
-                                movs        _SendApplyTemplate, #2
+_SendDone                       { Clear the error flag of the RH0 template (reverts change potentially made by SendCrowError). }
+                                andn        _SendApplyTemplate, #$80
 Send_ret
 SendResponseAndReturn_ret       ret
+
+
+{ SendResponseAndResetPointer (jmp)
+    This routine sends a response and then resets the sendBufferPointer to Payload before
+  going to ReceiveCommand.
+}
+SendResponseAndResetPointer
+                                call        #SendResponseAndReturn
+                                mov         sendBufferPointer, #Payload
+                                jmp         #ReceiveCommand
 
 
 { ==========  Begin User Block  ========== }
 
 { UserCode (jmp)
-    This is where PropCR code will jump to when a valid user command packet has arrived at the
-  user port.
+    This is where execution will go to when a valid command has arrived at the user port.
     Variables of interest:
         - Payload (register 0), the buffer where the command payload has been stored. Received
           data is stored in little-endian order within each long (assuming that 'propcr ordering'
-          was used by the PC). If the payload size is not a multiple of four the remaining upper
+          was used by the PC). If the payload size is not a multiple of four the unused upper
           bytes of the last long will be undefined.
         - payloadSize, the size of the command payload, which may be zero (this variable is also 
           used for sending).
@@ -771,15 +764,26 @@ SendResponseAndReturn_ret       ret
           in the cAddressMask bits, and the responseExpected flag in the cRspExpectedFlag bit.
         - sendBufferPointer, which points to the first register of the response payload. By 
           default it points to Payload. It may be changed, but it must be restored to Payload
-          before receiving the next command (the admin code assumes it is Payload).
+          before receiving the next command (the admin code assumes it is Payload). The
+          SendResponseAndResetPointer routine may be useful.
     PropCR routines for user code:
-        - SendResponse (jmp) or SendResponseAndReturn (call) to send a response. First, prepare
-          the response payload and set payloadSize.
-        - ReceiveCommand (jmp) to listen for another command.
-        - ReportUnknownProtocol (jmp) to report that the command's format is not known and
-          so no response can safely be sent.
-        - SendCrowError (jmp) to send any other Crow-level error, such as RequestTooLarge. Set
-          the low byte of Payload to the error number before jumping. 
+        - SendResponse (jmp), sends a response and goes to ReceiveCommand afterwards. First, prepare
+          the response payload and set payloadSize. The sending routines are safe to call even
+          if there is no open transaction (i.e. the responseExpected flag was not set in the
+          command). In this case the sending routines silently skip sending. Sending starts
+          at the low byte of sendBufferPointer and goes up from there.
+        - SendResponseAndReturn (call), sends a response and then returns to the calling code.
+        - SendResponseAndResetPointer (jmp), sends a response and then resets the sendBufferPointer
+          to Payload before going on to ReceiveCommand.
+        - ReceiveCommand (jmp) to listen for another command without sending.
+        - ReportUnknownCommandFormat (jmp) to send a UnknownCommandFormat error response, indicating
+          that the command's format is not known and so no other response can safely be sent.
+        - SendCrowError (jmp) to send any other Crow error response, such as RequestTooLarge. Set
+          the low byte of Payload to the error number before jumping. See the errors section of
+          the Crow standard for an explanation of error numbers.
+    Don't send more than one response. The Crow standard allows for only one response per command,
+  and PropCR does not perform any checking to protect against this mistake (checking could be added
+  at the cost of two instructions).
     Other useful registers:
         - tmp0-tmp4 and tmp5v-tmp9v, scratch registers available for use. The 'v' temporaries
           are undefined after a SendResponseAndReturn call. All are undefined when
@@ -789,7 +793,7 @@ SendResponseAndReturn_ret       ret
     Warning: don't use other SPRs without consulting the 'Special Purpose Registers' section.
 }
 UserCode
-                                jmp         #ReportUnknownProtocol
+                                jmp         #ReportUnknownCommandFormat
 
 
 { ==========  Begin Res'd Variables and Temporaries ========== }
