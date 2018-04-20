@@ -191,7 +191,7 @@ initShift                       mov         initShiftLimit-1, initShiftLimit-1-(
                                     device description in response to a getDeviceInfo admin command. Here we
                                     determine the 'N'. }
                                 cogid       _initTmp
-                                shl         _initTmp, #8
+                                shl         _initTmp, #16
                                 add         getDeviceInfoCogNum, _initTmp
 
                                 { Misc. }
