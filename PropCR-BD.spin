@@ -1,8 +1,8 @@
 {
 ========================================
 PropCR-BD.spin (with break detection)
-Version 0.3.0 (alpha/experimental)
-18 April 2018
+Version 0.3.1 (alpha/experimental)
+19 April 2018
 Chris Siedell
 https://github.com/chris-siedell/PropCR
 ========================================
@@ -532,7 +532,7 @@ _AdminOpenPortsList     if_nz   mov         Payload+1, #cUserPort               
 }
 AdminGetDeviceInfo
                                 mov         sendBufferPointer, #getDeviceInfoBuffer
-                                mov         payloadSize, #43
+                                mov         payloadSize, #44
                                 jmp         #SendResponseAndResetPointer
 
 
@@ -568,17 +568,17 @@ _AdminCheckUserPort             cmp         _admTmp, #cUserPort             wz  
 
 getDeviceInfoBuffer
 long $0201_4143         'initial header (0x43, 0x41, 0x01), crowVersion = 2
-long ((cMaxPayloadSize & $ff) << 24) | ((cMaxPayloadSize & $0700) << 8) | ((cMaxPayloadSize & $0700) >> 8) | ((cMaxPayloadSize & $ff) << 8) 'max payload sizes
-long $0e0f_000a         'packet includes implAsciiDesc and deviceAsciiDesc; implAsciiDesc has offset 15 and length 14
-long $500e_1d00         'deviceAsciiDesc has offset 29 and length 14; first char of implAsciiDesc is 'P' (final string is "PropCR-BD v0.3")
-long $4370_6f72         '"ropC"
-long $4442_2d52         '"R-BD"
-long $2e30_7620         '" v0."
-long $5838_5033         '"3"; deviceAsciiDesc starts with "P8X" (final string is "P8X32A (cog N)")
-long $2041_3233         '"32A "
-long $676f_6328         '"(cog"
+long $0000_0002 | (cMaxPayloadSize & $0700) | ((cMaxPayloadSize & $ff) << 16) | ((cMaxPayloadSize & $0700) << 16) 'crowAdminVersion = 2; start of max payload sizes
+long $1000_0a00 | (cMaxPayloadSize & $ff)   'last byte of max payload sizes; payload includes implAsciiDesc and deviceAsciiDesc, implAsciiDesc has offset 16
+long $0e1e_000e         'implAsciiDesc has length 14; deviceAsciiDesc has offset 30 and length 14
+long $706f_7250         'implAsciiDesc = "Prop"
+long $422d_5243         '"CR-B"
+long $3076_2044         '"D v0"
+long $3850_332e         '".d"; deviceAsciiDesc = "P8"
+long $4132_3358         '"X32A"
+long $6f63_2820         '" (co"
 getDeviceInfoCogNum
-long $0029_3020         '" N)" - initializing code adds cogID to second byte to get numeral
+long $2930_2067         '"g N)" - initializing code adds cogID to third byte to get numeral
 
 getPortInfoBuffer_Admin
 long $0303_4143         'initial header (0x43, 0x41, 0x03), port is open, serviceIdentifier included
