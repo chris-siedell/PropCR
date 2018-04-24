@@ -1,8 +1,8 @@
 {
 ========================================
 PropCR-BD.spin (with break detection)
-Version 0.3.1 (alpha/experimental)
-19 April 2018
+Version 0.3.2 (alpha/experimental)
+23 April 2018
 Chris Siedell
 https://github.com/chris-siedell/PropCR
 ========================================
@@ -76,10 +76,16 @@ con
     cRspExpectedFlag        = $80
     cAddressMask            = %0001_1111
     
-    { Crow error response numbers. }
-    cOversizedCommand           = 5
-    cPortNotOpen                = 7
-    cUnspecifiedServiceError    = 64
+    { Crow Error Response Numbers
+        Error numbers 0-63 should be used only by PropCR code (the device implementation). }
+    cOversizedCommand           = 6
+    cPortNotOpen                = 8
+
+    {   The following error constants may be used by the service (i.e. the user code), but these
+      are the only numbers in the range 64-127 that should be used -- the rest have been reserved
+      for future assignement.
+        The numbers 128-255 are available for custom assignment by the service code. }
+    cServiceError               = 64
     cUnknownCommandFormat       = 65
     cRequestTooLarge            = 66
     cServiceLowResources        = 67
