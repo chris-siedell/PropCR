@@ -1,0 +1,13 @@
+diffs.txt
+23 April 2018
+
+Changes from PropCR-BD to PropCR:
+- Document header at top.
+- Initial comment section.
+- No need for cBreak* constants.
+- In comment to SPRs section in CON.
+- No setBreakThresholdInMS Spin method.
+- No breakMultiple register.
+- RecoveryMode is different, and there is no BreakHandler.
+- getDeviceInfoBuffer is different (as is the payload size for it and cogID setting code).
+

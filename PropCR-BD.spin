@@ -580,7 +580,7 @@ long $0e1e_000e         'implAsciiDesc has length 14; deviceAsciiDesc has offset
 long $706f_7250         'implAsciiDesc = "Prop"
 long $422d_5243         '"CR-B"
 long $3076_2044         '"D v0"
-long $3850_332e         '".d"; deviceAsciiDesc = "P8"
+long $3850_332e         '".3"; deviceAsciiDesc = "P8"
 long $4132_3358         '"X32A"
 long $6f63_2820         '" (co"
 getDeviceInfoCogNum
