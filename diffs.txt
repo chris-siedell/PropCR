@@ -10,4 +10,5 @@ Changes from PropCR-BD to PropCR:
 - No breakMultiple register.
 - RecoveryMode is different, and there is no BreakHandler.
 - getDeviceInfoBuffer is different (as is the payload size for it and cogID setting code).
+- do not need _rcvyTmp or _rcvyCountdown temporaries.
 

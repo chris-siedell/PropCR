@@ -828,14 +828,12 @@ _rxLeftovers    res
 
 tmp8v
 _initTmp
-_rcvyTmp
 _txRemaining
 _rxRemaining    res
 
 tmp9v
 _initCount
 _admTmp
-_rcvyCountdown
 _txCount
 _rxCountdown    res
 
