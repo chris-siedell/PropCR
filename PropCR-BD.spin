@@ -2,7 +2,7 @@
 ========================================
 PropCR-BD.spin (with break detection)
 Version 0.3.2 (alpha/experimental)
-23 April 2018
+24 April 2018
 Chris Siedell
 https://github.com/chris-siedell/PropCR
 ========================================
@@ -15,8 +15,6 @@ echo, hostPresence, getDeviceInfo, getOpenPorts, and getPortInfo.
 PropCR (no '-BD') can be used. Break detection requires at least eight or nine extra
 registers (not counting the handler code itself).
  
-  See "PropCR User Guide.txt" for more details.
-
   The following methods are available to change the default settings before launch:
     setPins(rxPin, txPin)
     setBaudrate(baudrate) - MUST come before set*InBitPeriods

@@ -2,7 +2,7 @@
 ========================================
 PropCR.spin
 Version 0.3.2 (alpha/experimental)
-23 April 2018
+24 April 2018
 Chris Siedell
 https://github.com/chris-siedell/PropCR
 ========================================
@@ -13,8 +13,6 @@ echo, hostPresence, getDeviceInfo, getOpenPorts, and getPortInfo.
 
   This version does NOT have break detection. If break detection is required, use PropCR-BD. 
  
-  See "PropCR User Guide.txt" for more details.
-
   The following methods are available to change the default settings before launch:
     setPins(rxPin, txPin)
     setBaudrate(baudrate) - MUST come before set*InBitPeriods
