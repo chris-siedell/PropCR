@@ -1,40 +1,51 @@
 {
-========================================
-PropCR-BD.spin (with break detection)
-Version 0.3.2 (alpha/experimental)
-24 April 2018
+================================================
+PropCR-BD.spin
+Crow Device Implementation for P8X32A,
+    with break detection
+Version 0.4.0 (alpha/experimental)
+2 May 2018
 Chris Siedell
-https://github.com/chris-siedell/PropCR
-========================================
+source: https://github.com/chris-siedell/PropCR
+homepage: http://siedell.com/projects/PropCR
+================================================
 
   This file is intended to serve as a base for implementing a Crow service. By default
-it doesn't do anything except respond to standard Crow admin commands on port 0: ping,
+it doesn't do anything except respond to standard CrowAdmin commands on port 0: ping,
 echo, hostPresence, getDeviceInfo, getOpenPorts, and getPortInfo.
  
   This version features break detection. If break detection is not required then
 PropCR (no '-BD') can be used. Break detection requires at least eight or nine extra
 registers (not counting the handler code itself).
- 
-  The following methods are available to change the default settings before launch:
-    setPins(rxPin, txPin)
-    setBaudrate(baudrate) - MUST come before set*InBitPeriods
-    setInterbyteTimeoutInMS(milliseconds) - MUST follow setBaudrate
-    setInterbyteTimeoutInBitPeriods(count) - MUST follow setBaudrate
+
+  Configuring an instance before launch is done with these methods:
+
+    setPins(rxPin, txPin)                   - pins may be the same
+    setBaudrate(baudrate)                   - MUST come before set*InBitPeriods
+    setInterbyteTimeoutInMS(milliseconds)   - MUST follow setBaudrate
+    setInterbyteTimeoutInBitPeriods(count)  - MUST follow setBaudrate
     setRecoveryTimeInMS(milliseconds)
     setRecoveryTimeInBitPeriods(count)
-    setBreakThresholdInMS(milliseconds) - MUST be called if setRecoveryTime* is called
-    setAddress(address)
-    setPort(port)
+    setBreakThresholdInMS(milliseconds)     - MUST be called if setRecoveryTime* is called
+    setAddress(address)                     - address may be 1 to 31
+    setPort(port)                           - port may be 1 to 255 (0 is for CrowAdmin)
 
   Setting the baudrate must come before setting the interbyte timeout or recovery time.
+
+  The fastest supported baudrate is 26 clocks per bitperiod.
 
   If the recovery time is set, then setBreakThresholdInMS must be called afterwards
 in order to recalculate the break multiple, regardless if the threshold has changed.
 
   Calling the set* methods has no effect on launched instances.
 
-  start will not return until the new instance is completely loaded, so calling code
-may immediately prepare to launch another instance.
+  Launching is done with one of these two methods:
+
+    new             - returns cogID + 1, so 0 indicates failure
+    init(cogID)
+
+  The launching methods will not return until the new instance is completely loaded, so
+calling code may immediately prepare to launch another instance.
 }
 
 con
@@ -85,12 +96,12 @@ con
         The numbers 128-255 are available for custom assignment by the service code. }
     cServiceError               = 64
     cUnknownCommandFormat       = 65
-    cRequestTooLarge            = 66
-    cServiceLowResources        = 67
-    cCommandNotAvailable        = 68
-    cCommandNotImplemented      = 69
-    cCommandNotAllowed          = 70
-    cInvalidCommand             = 71
+    cServiceLowResources        = 66
+    cInvalidCommand             = 67
+    cRequestTooLarge            = 68
+    cCommandNotAvailable        = 69
+    cCommandNotImplemented      = 70
+    cCommandNotAllowed          = 71
     cIncorrectCommandSize       = 72
     cMissingCommandData         = 73
     cTooMuchCommandData         = 74
@@ -161,16 +172,20 @@ pub setPort(__port)
     _AdminCheckUserPort := (_AdminCheckUserPort & $ffff_ff00) | (__port & $ff)
     _RxCheckUserPort := (_RxCheckUserPort & $ffff_ff00) | (__port & $ff)
 
-pub start
-    result := cognew(@Init, 0) + 1          'PropCR does not use par, so it is free for user code
+pub new
+    result := cognew(@Entry, 0) + 1         'PropCR does not use par, so it is free for user code
+    waitcnt(cnt + 10000)                    'wait for cog loading to finish to protect settings of just launched cog
+
+pub init(__cogid)
+    coginit(__cogid, @Entry, 0)             'PropCR does not use par, so it is free for user code
     waitcnt(cnt + 10000)                    'wait for cog loading to finish to protect settings of just launched cog
 
 
 dat
 
-{ ==========  Begin Payload Buffer and Initialization  ========== }
+{ ==========  Begin Payload Buffer, Initialization, and Entry  ========== }
 
-{ Payload and Init
+{ Payload Buffer, Initialization, and Entry
     The payload buffer is where PropCR will put received payloads. It is also where it will send
   response payloads from unless sendBufferPointer is changed.
     The payload buffer is placed at the beginning of the cog for two reasons:
@@ -180,22 +195,22 @@ dat
   will shift the permanent code into place. This prevents wasting excessive hub space with an empty buffer.
 }
 org 0
-Init
+Entry
 Payload
-                                { First, shift everything into place. Assumptions:
-                                    - The actual content (not address) of the register after initEnd is initShiftStart (nothing
-                                      but org and res'd registers between them).
-                                    - All addresses starting from initShiftLimit and up are res'd and are not shifted. }
-                                mov         _initCount, #initShiftLimit - initShiftStart
-initShift                       mov         initShiftLimit-1, initShiftLimit-1-(initShiftStart - (initEnd + 1))
-                                sub         initShift, initOneInDAndSFields
-                                djnz        _initCount, #initShift
+                                { First, shift the permanent code into place. Definitions:
+                                    InitEnd - the last register of initialization code; it is assumed that the
+                                              next register contains the unshifted contents of InitShiftStart,
+                                    InitShiftStart - the address where the first shifted register will go,
+                                    InitShiftLimit - the address just after the last shifted register. }
+                                mov         _initCount, #InitShiftLimit - InitShiftStart
+:shift                          mov         InitShiftLimit-1, InitShiftLimit-1-(InitShiftStart - (InitEnd + 1))
+                                sub         :shift, initOneInDAndSFields
+                                djnz        _initCount, #:shift
 
                                 { As originally written, this implementation will include "P8X32A (cog N)" as the
                                     device description in response to a getDeviceInfo admin command. Here we
                                     determine the 'N'. }
                                 cogid       _initTmp
-                                shl         _initTmp, #16
                                 add         getDeviceInfoCogNum, _initTmp
 
                                 { Misc. }
@@ -204,24 +219,27 @@ initShift                       mov         initShiftLimit-1, initShiftLimit-1-(
 
                                 jmp         #ReceiveCommand
 
-
-{ initEnd is the last real (not reserved) register before initShiftStart. Its address is used by the initialization shifting code. }
-initEnd
+{ InitEnd - the last register of initialization code, just before the unshifted code. }
+InitEnd
 initOneInDAndSFields            long    $201
 
-fit cNumPayloadRegisters 'On error: not enough room for init code.
+
+fit cNumPayloadRegisters 'On error: not enough room for initalization code.
 org cNumPayloadRegisters
 
-{ ==========  Begin PropCR Block  ========== }
-
-{   It is possible to place res'd registers here (between initEnd and initShiftStart) -- the shifting
+{   It is possible to place res'd registers here, between InitEnd and InitShiftStart -- the shifting
   code will accommodate them. However, bitPeriod0 must always be at an even address register. }
+
+{ InitShiftStart - the address of the first shifted register. }
+InitShiftStart
+
+
+{ ==========  Begin PropCR Block  ========== }
 
 { Settings Notes
     The following registers store some settings. Some settings are stored in other locations (within
   instructions in some cases), and some are stored in multiple locations.
 }
-initShiftStart
 bitPeriod0              long    cBitPeriod0
 bitPeriod1              long    cBitPeriod1
 startBitWait            long    cStartBitWait 
@@ -439,7 +457,10 @@ ReceiveCommandFinish
                                 test        payloadSize, #%11               wz      'z=0 leftovers exist
                         if_nz   movd        _RxStoreLeftovers, _rxNextAddr
 
-                                { Evaluate F16 for last byte. These are also spacer instructions that don't change z.
+                                { The code for storing leftover payload bytes is interleaved with the F16 code due to
+                                    the need for spacer instructions, and the way the z-flag is being used. }
+
+                                { Calculate F16 for last byte. These are also spacer instructions that don't change z.
                                     There is no need to compute upper F16 -- it should already be 0 if there are no errors. }
                                 add         _rxF16L, _rxByte
                                 cmpsub      _rxF16L, #255
@@ -536,7 +557,7 @@ _AdminOpenPortsList     if_nz   mov         Payload+1, #cUserPort               
 }
 AdminGetDeviceInfo
                                 mov         sendBufferPointer, #getDeviceInfoBuffer
-                                mov         payloadSize, #44
+                                mov         payloadSize, #46
                                 jmp         #SendResponseAndResetPointer
 
 
@@ -574,15 +595,16 @@ getDeviceInfoBuffer
 long $0201_4143         'initial header (0x43, 0x41, 0x01), crowVersion = 2
 long $0000_0002 | (cMaxPayloadSize & $0700) | ((cMaxPayloadSize & $ff) << 16) | ((cMaxPayloadSize & $0700) << 16) 'crowAdminVersion = 2; start of max payload sizes
 long $1000_0a00 | (cMaxPayloadSize & $ff)   'last byte of max payload sizes; payload includes implAsciiDesc and deviceAsciiDesc, implAsciiDesc has offset 16
-long $0e1e_000e         'implAsciiDesc has length 14; deviceAsciiDesc has offset 30 and length 14
+long $0e20_0010         'implAsciiDesc has length 16; deviceAsciiDesc has offset 32 and length 14
 long $706f_7250         'implAsciiDesc = "Prop"
 long $422d_5243         '"CR-B"
-long $3076_2044         '"D v0"
-long $3850_332e         '".3"; deviceAsciiDesc = "P8"
-long $4132_3358         '"X32A"
-long $6f63_2820         '" (co"
+long $3076_2044         '"D vN"
+long $302e_342e         '".N.N"
+long $3358_3850         'deviceAsciiDesc = "P8X3"
+long $2820_4132         '"2A ("
+long $2067_6f63         '"cog "
 getDeviceInfoCogNum
-long $2930_2067         '"g N)" - initializing code adds cogID to third byte to get numeral
+long $0000_2930         '"N)" - initializing code adds cogID to first byte to get numeral
 
 getPortInfoBuffer_Admin
 long $0303_4143         'initial header (0x43, 0x41, 0x03), port is open, serviceIdentifier included
@@ -800,11 +822,14 @@ UserCode
                                 jmp         #ReportUnknownCommandFormat
 
 
+{ InitShiftLimit - the address immediately after the last shifted register. }
+InitShiftLimit
+
+
 { ==========  Begin Res'd Variables and Temporaries ========== }
 
 fit 485 'On error: must reduce user code, payload buffer, or admin code.
 org 485
-initShiftLimit          'The initialization shifting code will ignore registers at and above this address.
 
 { Variables }
 payloadSize     res     'used for both sending and receiving; potential nop; 11-bit value
